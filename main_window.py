@@ -75,6 +75,7 @@ class MainWindow(QMainWindow):
             if total_images > 0:
               self.progress_slider.setRange(0, total_images - 1)
             self.setWindowTitle(f"QuickMask - {self.app_state.image_paths[self.app_state.current_index]}")
+        self.app_state.set_mode('draw')
         self.canvas.fit_to_view()
         self._update_status_bar()
 
@@ -111,7 +112,12 @@ class MainWindow(QMainWindow):
         if self.jump_input.hasFocus():
             super().keyPressEvent(event); return
         key = event.key(); modifiers = event.modifiers()
-        if key == Qt.Key_X:
+        if key == Qt.Key_R:
+            if self.app_state.mode == 'draw':
+                self.app_state.set_mode('rect_seg')
+            else:
+                self.app_state.set_mode('draw')
+        elif key == Qt.Key_X:
             reply = QMessageBox.question(self, '确认删除', '您确定要删除当前图片的【标注掩码】吗？\n此操作不可撤销。', QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes: self.app_state.delete_current_mask()
         elif key == Qt.Key_Delete:
@@ -152,10 +158,12 @@ class MainWindow(QMainWindow):
         self.slider_timer.start(200)
 
     def _update_status_bar(self):
+        current_mode_text = "矩形选择" if self.app_state.mode == 'rect_seg' else "绘制"
+        
         class_name = f"类别 {self.app_state.current_class_id}"
         brush_size = f"笔刷 {self.app_state.brush_size}"
         zoom_text = f"缩放 {self.canvas.zoom_level:.2f}x"
-        self.status_label.setText(f"{class_name} | {brush_size} | {zoom_text}")
+        self.status_label.setText(f"模式: {current_mode_text} | {class_name} | {brush_size} | {zoom_text}")
 
     def closeEvent(self, event):
         print("正在关闭，保存当前掩码..."); self.app_state.save_current_mask(); event.accept()
