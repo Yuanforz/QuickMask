@@ -1,7 +1,7 @@
 # 文件: main_window.py
 import sys
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QSlider, QLabel, QLineEdit, QStatusBar, QMessageBox)
+                             QSlider, QLabel, QLineEdit, QStatusBar, QMessageBox, QApplication)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPainter, QColor
 from app_state import AppState
@@ -35,6 +35,9 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, 1200, 800)
         self._init_ui()
         self._connect_signals()
+        
+        # 启动时立即初始化SAM模型
+        self._init_sam_model_async()
 
     def _init_ui(self):
         self.canvas = AnnotationCanvas(self.app_state)
@@ -79,6 +82,19 @@ class MainWindow(QMainWindow):
         self.canvas.fit_to_view()
         self._update_status_bar()
 
+    def _init_sam_model_async(self):
+        """异步初始化SAM模型"""
+        def init_sam():
+            self.status_label.setText("正在初始化SAM2.1模型...")
+            success = self.app_state.init_sam_model()
+            if success:
+                self.status_label.setText("SAM2.1模型加载完成，可以使用E键进入辅助标注模式")
+            else:
+                self.status_label.setText("SAM2.1模型加载失败，将只使用基本功能")
+        
+        # 使用QTimer延迟执行，避免阻塞UI
+        QTimer.singleShot(100, init_sam)
+
     def _on_files_deleted(self):
         total = len(self.app_state.image_paths)
         if total == 0:
@@ -112,6 +128,29 @@ class MainWindow(QMainWindow):
         if self.jump_input.hasFocus():
             super().keyPressEvent(event); return
         key = event.key(); modifiers = event.modifiers()
+        
+        # SAM辅助标注相关快捷键
+        if key == Qt.Key_E:
+            if self.app_state.mode == 'sam_assist':
+                # 在SAM模式下按E表示拒绝并退出
+                self.app_state.set_mode('draw')
+                self.status_bar.showMessage("已退出SAM辅助标注模式", 2000)
+            else:
+                # 进入SAM模式
+                self._enter_sam_mode()
+        elif key == Qt.Key_Space and self.app_state.mode == 'sam_assist':
+            # 在SAM模式下按空格接受并应用结果
+            if self.app_state.apply_sam_prediction():
+                self.status_bar.showMessage("SAM标注已应用", 2000)
+            else:
+                self.status_bar.showMessage("无SAM预测结果可应用", 2000)
+            return
+            
+        # 在SAM模式下切换图片会自动退出SAM模式
+        if self.app_state.mode == 'sam_assist' and key in (Qt.Key_A, Qt.Key_D):
+            self.app_state.set_mode('draw')
+            self.status_bar.showMessage("切换图片，已退出SAM模式", 2000)
+        
         if key == Qt.Key_R:
             if self.app_state.mode == 'draw':
                 self.app_state.set_mode('rect_seg')
@@ -158,12 +197,55 @@ class MainWindow(QMainWindow):
         self.slider_timer.start(200)
 
     def _update_status_bar(self):
-        current_mode_text = "矩形选择" if self.app_state.mode == 'rect_seg' else "绘制"
+        mode_names = {
+            'draw': '绘制',
+            'rect_seg': '矩形选择', 
+            'sam_assist': 'SAM2.1辅助标注'
+        }
+        current_mode_text = mode_names.get(self.app_state.mode, '未知模式')
         
         class_name = f"类别 {self.app_state.current_class_id}"
         brush_size = f"笔刷 {self.app_state.brush_size}"
         zoom_text = f"缩放 {self.canvas.zoom_level:.2f}x"
-        self.status_label.setText(f"模式: {current_mode_text} | {class_name} | {brush_size} | {zoom_text}")
+        
+        # 在SAM模式下显示额外信息
+        if self.app_state.mode == 'sam_assist':
+            pos_count = len(self.app_state.sam_positive_points)
+            neg_count = len(self.app_state.sam_negative_points)
+            sam_info = f"正点击:{pos_count} 负点击:{neg_count}"
+            self.status_label.setText(f"模式: {current_mode_text} | {class_name} | {sam_info} | {zoom_text}")
+        else:
+            self.status_label.setText(f"模式: {current_mode_text} | {class_name} | {brush_size} | {zoom_text}")
+
+    def _enter_sam_mode(self):
+        """进入SAM辅助标注模式"""
+        # 检查SAM模型是否已初始化
+        if self.app_state.sam_predictor is None:
+            if not self.app_state.init_sam_model():
+                QMessageBox.warning(self, 'SAM模型错误', 
+                                   'SAM模型初始化失败！\n请检查依赖安装和模型文件。')
+                return
+        
+        # 检查是否有当前图像
+        if self.app_state.current_image is None:
+            QMessageBox.warning(self, '图像错误', '请先加载图像！')
+            return
+        
+        # 立即为当前图像生成embedding
+        self.status_label.setText("正在生成图像embedding...")
+        QApplication.processEvents()  # 更新UI
+        
+        if not self.app_state.generate_image_embedding():
+            QMessageBox.warning(self, 'SAM处理错误', 
+                               '无法为当前图像生成embedding！')
+            return
+        
+        # 清除之前的SAM状态
+        self.app_state.clear_sam_state()
+        
+        # 切换到SAM模式
+        self.app_state.set_mode('sam_assist')
+        self.status_label.setText("SAM2.1辅助标注模式 - 左键正点击，右键负点击，空格接受，E键退出")
 
     def closeEvent(self, event):
         print("正在关闭，保存当前掩码..."); self.app_state.save_current_mask(); event.accept()

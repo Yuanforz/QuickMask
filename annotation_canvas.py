@@ -19,6 +19,9 @@ class AnnotationCanvas(QWidget):
         self.rect_start_pos = None # 矩形选择的起始点 (视图坐标)
         self.rect_end_pos = None   # 矩形选择的结束点 (视图坐标)
 
+        # 新增：SAM辅助标注模式相关属性
+        self.sam_point_radius = 6  # SAM点击点的显示半径
+
         # 连接模式切换信号
         self.app_state.mode_changed.connect(self.on_mode_change)
 
@@ -27,9 +30,12 @@ class AnnotationCanvas(QWidget):
         # 从矩形模式切换走时，清除未完成的矩形
         self.rect_start_pos = None
         self.rect_end_pos = None
+        
         # 根据模式更新鼠标指针
         if mode == 'rect_seg':
             self.setCursor(Qt.CrossCursor)
+        elif mode == 'sam_assist':
+            self.setCursor(Qt.PointingHandCursor)
         else:
             self.setCursor(Qt.ArrowCursor) # ArrowCursor 会被笔刷预览覆盖
         self.update()
@@ -54,6 +60,8 @@ class AnnotationCanvas(QWidget):
             self._draw_brush_preview(painter)
         elif self.app_state.mode == 'rect_seg':
             self._draw_selection_rect(painter)
+        elif self.app_state.mode == 'sam_assist':
+            self._draw_sam_points(painter)
 
     def _draw_selection_rect(self, painter):
         """在视图上绘制正在选择的矩形"""
@@ -63,7 +71,55 @@ class AnnotationCanvas(QWidget):
             rect = QRectF(self.rect_start_pos, self.rect_end_pos).normalized()
             painter.drawRect(rect)
 
+    def _draw_sam_points(self, painter):
+        """绘制SAM辅助标注的点击点"""
+        painter.save()
+        
+        # 绘制正点击点（绿色圆圈）
+        for x, y in self.app_state.sam_positive_points:
+            view_pos = self._image_to_view_coords(x, y)
+            if view_pos:
+                painter.setPen(QPen(QColor(0, 255, 0), 3))
+                painter.setBrush(QColor(0, 255, 0, 100))
+                painter.drawEllipse(view_pos, self.sam_point_radius * 2, self.sam_point_radius * 2)
+                # 绘制十字标记
+                painter.setPen(QPen(QColor(255, 255, 255), 2))
+                painter.drawLine(int(view_pos.x() - self.sam_point_radius), int(view_pos.y()), 
+                               int(view_pos.x() + self.sam_point_radius), int(view_pos.y()))
+                painter.drawLine(int(view_pos.x()), int(view_pos.y() - self.sam_point_radius),
+                               int(view_pos.x()), int(view_pos.y() + self.sam_point_radius))
+        
+        # 绘制负点击点（红色圆圈）
+        for x, y in self.app_state.sam_negative_points:
+            view_pos = self._image_to_view_coords(x, y)
+            if view_pos:
+                painter.setPen(QPen(QColor(255, 0, 0), 3))
+                painter.setBrush(QColor(255, 0, 0, 100))
+                painter.drawEllipse(view_pos, self.sam_point_radius * 2, self.sam_point_radius * 2)
+                # 绘制X标记
+                painter.setPen(QPen(QColor(255, 255, 255), 2))
+                painter.drawLine(int(view_pos.x() - self.sam_point_radius//2), int(view_pos.y() - self.sam_point_radius//2),
+                               int(view_pos.x() + self.sam_point_radius//2), int(view_pos.y() + self.sam_point_radius//2))
+                painter.drawLine(int(view_pos.x() - self.sam_point_radius//2), int(view_pos.y() + self.sam_point_radius//2),
+                               int(view_pos.x() + self.sam_point_radius//2), int(view_pos.y() - self.sam_point_radius//2))
+        
+        painter.restore()
+
     def mousePressEvent(self, event):
+        # SAM辅助标注模式的逻辑
+        if self.app_state.mode == 'sam_assist':
+            img_coords = self._view_to_image_coords(event.pos())
+            if img_coords:
+                x, y = img_coords
+                if event.button() == Qt.LeftButton:
+                    # 左键添加正点击点
+                    self.app_state.add_sam_point(x, y, is_positive=True)
+                elif event.button() == Qt.RightButton:
+                    # 右键添加负点击点
+                    self.app_state.add_sam_point(x, y, is_positive=False)
+                self.update()
+            return
+
         # 矩形分割模式的逻辑
         if self.app_state.mode == 'rect_seg':
             if event.button() == Qt.LeftButton:
@@ -87,6 +143,11 @@ class AnnotationCanvas(QWidget):
             self.setCursor(Qt.ClosedHandCursor)
 
     def mouseMoveEvent(self, event):
+        # SAM辅助标注模式：不处理拖拽，只响应点击
+        if self.app_state.mode == 'sam_assist':
+            self.update()  # 更新鼠标位置显示
+            return
+            
         # 矩形分割模式的逻辑
         if self.app_state.mode == 'rect_seg':
             if self.left_mouse_down:
@@ -208,6 +269,14 @@ class AnnotationCanvas(QWidget):
         if 0 <= img_x < img_w and 0 <= img_y < img_h:
             return (int(img_x), int(img_y))
         return None
+    
+    def _image_to_view_coords(self, img_x, img_y):
+        """将图像坐标转换为视图坐标"""
+        if self.app_state.current_image is None: 
+            return None
+        view_x = img_x * self.zoom_level + self.pan_offset.x()
+        view_y = img_y * self.zoom_level + self.pan_offset.y()
+        return QPointF(view_x, view_y)
     def _draw_at_pos(self, view_pos, connect_from=None):
         img_coords = self._view_to_image_coords(view_pos)
         if img_coords is None: return None
@@ -230,6 +299,21 @@ class AnnotationCanvas(QWidget):
         image = self.app_state.current_image
         mask = self.app_state.current_mask
         color_mask = np.zeros_like(image, dtype=np.uint8)
+        
+        # 渲染现有掩码
         for class_id, color in self.class_colors.items():
             color_mask[mask == class_id] = color
-        return cv2.addWeighted(image, 0.7, color_mask, 0.3, 0)
+        
+        # 如果在SAM模式下且有临时掩码，以半透明方式叠加显示
+        if self.app_state.mode == 'sam_assist' and self.app_state.sam_temp_mask is not None:
+            # 创建SAM预览掩码（使用当前类别颜色，但更透明）
+            sam_color = self.class_colors.get(self.app_state.current_class_id, (255, 255, 255))
+            sam_preview = np.zeros_like(image, dtype=np.uint8)
+            sam_preview[self.app_state.sam_temp_mask > 0] = sam_color
+            
+            # 先混合现有掩码，再叠加SAM预览
+            blended = cv2.addWeighted(image, 0.7, color_mask, 0.3, 0)
+            final_result = cv2.addWeighted(blended, 0.8, sam_preview, 0.2, 0)
+            return final_result
+        else:
+            return cv2.addWeighted(image, 0.7, color_mask, 0.3, 0)
