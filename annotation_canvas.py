@@ -108,6 +108,14 @@ class AnnotationCanvas(QWidget):
     def mousePressEvent(self, event):
         # SAM辅助标注模式的逻辑
         if self.app_state.mode == 'sam_assist':
+            # 处理中键拖拽（平移功能）
+            if event.button() == Qt.MiddleButton:
+                self.middle_mouse_down = True
+                self.last_pan_pos = event.pos()
+                self.setCursor(Qt.ClosedHandCursor)
+                return
+            
+            # SAM点击逻辑
             img_coords = self._view_to_image_coords(event.pos())
             if img_coords:
                 x, y = img_coords
@@ -143,9 +151,15 @@ class AnnotationCanvas(QWidget):
             self.setCursor(Qt.ClosedHandCursor)
 
     def mouseMoveEvent(self, event):
-        # SAM辅助标注模式：不处理拖拽，只响应点击
+        # SAM辅助标注模式：支持中键拖拽平移，但不处理绘制拖拽
         if self.app_state.mode == 'sam_assist':
-            self.update()  # 更新鼠标位置显示
+            if self.middle_mouse_down:
+                delta = QPointF(event.pos() - self.last_pan_pos)
+                self.pan_offset += delta
+                self.last_pan_pos = event.pos()
+                self.update()
+            else:
+                self.update()  # 更新鼠标位置显示
             return
             
         # 矩形分割模式的逻辑
@@ -167,6 +181,13 @@ class AnnotationCanvas(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event):
+        # SAM辅助标注模式：只处理中键释放
+        if self.app_state.mode == 'sam_assist':
+            if event.button() == Qt.MiddleButton:
+                self.middle_mouse_down = False
+                self.setCursor(Qt.ArrowCursor)
+            return
+            
         # 矩形分割模式的逻辑
         if self.app_state.mode == 'rect_seg':
             if event.button() == Qt.LeftButton and self.left_mouse_down:
