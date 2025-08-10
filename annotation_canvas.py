@@ -233,6 +233,12 @@ class AnnotationCanvas(QWidget):
         # 使用Otsu's方法自动确定最佳阈值
         thresh_val, binary_mask = cv2.threshold(gray_roi, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
+        # 保存分割区域信息和二值掩码，用于后续取反
+        self.app_state.last_rect_seg_region = (x1, y1, x2, y2)
+        self.app_state.last_rect_seg_mask = binary_mask.copy()
+        # 设置可以取反的标志
+        self.app_state.can_invert_rect_seg = True
+        
         # 4. 将处理结果应用到主掩码
         # 将二值化结果（0或255）转换为（0或当前类别ID）
         class_mask = (binary_mask // 255) * self.app_state.current_class_id
@@ -250,7 +256,7 @@ class AnnotationCanvas(QWidget):
         self.rect_start_pos = None
         self.rect_end_pos = None
         self.app_state.mask_updated.emit()
-        print(f"自动分割完成，Otsu阈值: {thresh_val}")
+        print(f"自动分割完成，Otsu阈值: {thresh_val} - 按空格键取反结果")
 
 
     # ... 其他所有方法保持不变 ...

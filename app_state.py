@@ -25,6 +25,11 @@ class AppState(QObject):
         # 应用模式状态 ('draw', 'rect_seg', 'sam_assist')
         self.mode = 'draw'
         
+        # 矩形分割相关状态
+        self.last_rect_seg_region = None  # 存储最后一次矩形分割的区域信息 (x1, y1, x2, y2)
+        self.last_rect_seg_mask = None    # 存储最后一次矩形分割生成的掩码
+        self.can_invert_rect_seg = False  # 标记是否可以对矩形分割结果进行取反
+        
         # SAM相关状态（延迟初始化）
         self.sam_model = None
         self.sam_predictor = None
@@ -97,6 +102,10 @@ class AppState(QObject):
             h, w = self.current_image.shape[:2]
             self.current_mask = np.zeros((h, w), dtype=np.uint8)
         self.undo_stack.clear()
+        # 清理矩形分割状态
+        self.last_rect_seg_region = None
+        self.last_rect_seg_mask = None
+        self.can_invert_rect_seg = False
         self.file_list_updated.emit(self.mask_existence)
         self.state_changed.emit()
         self.progress_updated.emit(self.current_index, len(self.image_paths))
@@ -139,7 +148,7 @@ class AppState(QObject):
         self.brush_size = max(1, min(size, 200)); self.mask_updated.emit()
     def set_class_id(self, class_id):
         self.current_class_id = class_id; print(f"切换到类别: {self.current_class_id}")
-    def add_to_undo_stack(self):
+    def add_to_undo_stack(self, is_invert_operation=False):
         if len(self.undo_stack) >= self.max_undo_steps: self.undo_stack.pop(0)
         # 检查current_mask是否为None
         if self.current_mask is not None:
@@ -149,6 +158,10 @@ class AppState(QObject):
             if self.current_image is not None:
                 empty_mask = np.zeros(self.current_image.shape[:2], dtype=np.uint8)
                 self.undo_stack.append(empty_mask)
+        
+        # 非取反操作会清除矩形分割取反标志
+        if not is_invert_operation:
+            self.can_invert_rect_seg = False
     def undo(self):
         if self.mode == 'sam_assist':
             # SAM模式下的撤销：按时间顺序撤销最后添加的点
@@ -183,6 +196,9 @@ class AppState(QObject):
                 self.current_mask = self.undo_stack.pop()
                 self.mask_updated.emit()
                 print("操作已撤销")
+        
+        # 任何撤销操作都清除矩形分割取反标志
+        self.can_invert_rect_seg = False
     
     # SAM2.1辅助标注相关方法
     def init_sam_model(self):
@@ -378,6 +394,9 @@ class AppState(QObject):
         # 清理SAM状态
         self.clear_sam_state()
         
+        # 清除矩形分割取反标志
+        self.can_invert_rect_seg = False
+        
         # 切换回绘制模式
         self.set_mode('draw')
         
@@ -394,3 +413,64 @@ class AppState(QObject):
         if reset_embedding:
             self.current_embedding = False  # 只在切换图片时重置embedding
         print("SAM状态已清理")
+    
+    def clear_rect_seg_invert_flag(self):
+        """清除矩形分割取反标志（用于非取反的其他操作）"""
+        self.can_invert_rect_seg = False
+    
+    def invert_last_rect_segmentation(self):
+        """取反最后一次矩形分割的结果"""
+        if not self.can_invert_rect_seg:
+            print("当前无法进行矩形分割取反操作")
+            return False
+            
+        if self.last_rect_seg_region is None or self.last_rect_seg_mask is None:
+            print("没有可取反的矩形分割结果")
+            return False
+            
+        if self.current_mask is None:
+            print("当前掩码为空，无法取反")
+            return False
+            
+        try:
+            # 保存到撤销栈（标记为取反操作）
+            self.add_to_undo_stack(is_invert_operation=True)
+            
+            x1, y1, x2, y2 = self.last_rect_seg_region
+            
+            # 获取原始区域掩码
+            original_roi_mask = self.current_mask[y1:y2, x1:x2].copy()
+            
+            # 创建取反掩码：在分割区域内，原来是0的变成当前类别，原来是当前类别的变成0
+            inverted_mask = self.last_rect_seg_mask.copy()
+            
+            # 取反逻辑：255变成0，0变成255
+            inverted_binary = 255 - inverted_mask
+            
+            # 转换为类别掩码
+            inverted_class_mask = (inverted_binary // 255) * self.current_class_id
+            
+            # 应用取反结果：先清除原来的分割结果，再应用取反结果
+            # 在分割区域内，保留非当前类别的标注，然后应用取反结果
+            roi_without_current_class = original_roi_mask.copy()
+            roi_without_current_class[self.last_rect_seg_mask == 255] = 0  # 清除原分割结果
+            
+            # 应用取反结果
+            new_roi_mask = np.maximum(roi_without_current_class, inverted_class_mask)
+            
+            # 写回主掩码
+            self.current_mask[y1:y2, x1:x2] = new_roi_mask
+            
+            # 更新最后分割掩码为取反后的结果
+            self.last_rect_seg_mask = inverted_binary
+            
+            # 取反后禁用进一步的取反操作
+            self.can_invert_rect_seg = False
+            
+            self.mask_updated.emit()
+            print("矩形分割结果已取反")
+            return True
+            
+        except Exception as e:
+            print(f"取反矩形分割失败: {e}")
+            return False

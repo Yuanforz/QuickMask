@@ -145,6 +145,13 @@ class MainWindow(QMainWindow):
             else:
                 self.status_bar.showMessage("无SAM预测结果可应用", 2000)
             return
+        elif key == Qt.Key_Space and self.app_state.mode == 'draw':
+            # 在绘制模式下按空格取反最后的矩形分割结果
+            if self.app_state.invert_last_rect_segmentation():
+                self.status_bar.showMessage("矩形分割结果已取反", 2000)
+            else:
+                self.status_bar.showMessage("没有可取反的矩形分割结果", 2000)
+            return
             
         # 在SAM模式下切换图片会自动退出SAM模式
         if self.app_state.mode == 'sam_assist' and key in (Qt.Key_A, Qt.Key_D):

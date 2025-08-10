@@ -6,10 +6,11 @@ from main_window import MainWindow
 if __name__ == '__main__':
     # 1. 创建应用实例
     app = QApplication(sys.argv)
+    root = "D:\\Download\\Tencent Files\\1370883911\\FileRecv\\wcx"
 
     # 2. 创建核心状态管理器
     #    程序将自动在当前目录下寻找 'images' 和 'masks' 文件夹
-    app_state = AppState(image_dir="images", mask_dir="masks")
+    app_state = AppState(image_dir=root + "/images", mask_dir=root + "/masks")
 
     # 3. 创建主窗口
     main_window = MainWindow(app_state)
